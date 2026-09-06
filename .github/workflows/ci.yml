@@ -1,0 +1,234 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  java:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      - run: ./gradlew check
+        if: runner.os != 'Windows'
+      - run: .\gradlew.bat check
+        if: runner.os == 'Windows'
+
+  native-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev libsodium-dev autoconf autoconf-archive automake libtool
+      - name: Build and test native client with sanitizers
+        run: |
+          cmake -S client/native -B build/native-sanitized -DRYMGA_ENABLE_SANITIZERS=ON
+          cmake --build build/native-sanitized --parallel
+          ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build/native-sanitized --output-on-failure
+      - name: Fuzz the binary manifest parser
+        run: |
+          cmake -S client/native -B build/native-fuzz -DCMAKE_C_COMPILER=clang -DRYMGA_ENABLE_FUZZER=ON
+          cmake --build build/native-fuzz --target rymga_loader_manifest_fuzz --parallel
+          ASAN_OPTIONS=detect_leaks=0 build/native-fuzz/rymga_loader_manifest_fuzz -dict=client/native/tests/manifest_fuzz.dict -runs=100000
+      - name: Build and verify
+        run: RYMGA_BUILD_DIR="$GITHUB_WORKSPACE/build/native" ./scripts/build-and-verify.sh
+      - name: Run the HTTPS end-to-end flow
+        run: |
+          mkdir -p build/e2e-artifact build/e2e-host build/application-loader /tmp/rymga-loader-tls /tmp/rymga-loader-runtime /tmp/rymga-loader-rúntime /tmp/rymga-loader-plugins
+          chmod 700 /tmp/rymga-loader-runtime /tmp/rymga-loader-rúntime /tmp/rymga-loader-plugins
+          javac --release 21 -d build/e2e-host examples/plugin-host/src/main/java/example/plugin/Plugin.java examples/plugin-host/src/main/java/example/plugin/PluginHost.java
+          openssl base64 -d -in examples/fixtures/demo-plugin-rymga.jar.b64 -out build/e2e-artifact/demo-plugin.jar
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost -keyout /tmp/rymga-loader-tls/localhost.key -out /tmp/rymga-loader-tls/localhost.crt
+          cp client/java/build/libs/rymga-application-loader-linux-x86_64.jar build/application-loader/loader.jar
+          set +e
+          java -jar build/application-loader/loader.jar
+          generated_config_status=$?
+          set -e
+          [ "$generated_config_status" -eq 2 ]
+          sed -i 's/key: ""/key: "dev-license"/' build/application-loader/config.yml
+          cp /tmp/rymga-loader-tls/localhost.crt build/application-loader/loader-ca.pem
+          keytool -importcert -noprompt -alias local-provider -file /tmp/rymga-loader-tls/localhost.crt -keystore /tmp/rymga-loader-tls/provider-truststore.p12 -storetype PKCS12 -storepass changeit
+          java --add-modules jdk.httpserver -cp gateway/build/classes/java/test com.rymga.loader.gateway.LicenseProviderFixture /tmp/rymga-loader-tls/localhost.crt /tmp/rymga-loader-tls/localhost.key > build/provider.log 2>&1 & provider_pid=$!
+          export LOADER_LICENSE_PROVIDER_MODE=http LOADER_LICENSE_PROVIDER_URL=https://localhost:9443/v1/verify LOADER_LICENSE_PROVIDER_CREDENTIAL=provider-test-credential LOADER_LICENSE_PROVIDER_TIMEOUT_MILLIS=3000
+          export LOADER_SIGNING_KEY_ID=dev-2026 LOADER_SIGNING_PRIVATE_KEY_PKCS8_BASE64=MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+          export LOADER_SIGNING_PUBLIC_KEY_X509_BASE64=MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=
+          export LOADER_ARTIFACT_ROOT="$GITHUB_WORKSPACE/build/e2e-artifact" LOADER_ARTIFACT_PRODUCT_ID=demo-plugin LOADER_ARTIFACT_CHANNEL=stable LOADER_ARTIFACT_ID=demo-release LOADER_ARTIFACT_FILENAME=demo-plugin.jar
+          export QUARKUS_HTTP_INSECURE_REQUESTS=disabled QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/tmp/rymga-loader-tls/localhost.crt QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/tmp/rymga-loader-tls/localhost.key
+          java -Djavax.net.ssl.trustStore=/tmp/rymga-loader-tls/provider-truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit -jar gateway/build/quarkus-app/quarkus-run.jar > build/gateway.log 2>&1 & gateway_pid=$!
+          trap 'kill "$gateway_pid" "$provider_pid" 2>/dev/null || true' EXIT
+          ready=false provider_ready=false
+          for attempt in {1..30}; do
+            provider_status="$(curl --silent --show-error --cacert /tmp/rymga-loader-tls/localhost.crt -o /dev/null -w '%{http_code}' https://localhost:9443/health || true)"
+            status="$(curl --silent --show-error --cacert /tmp/rymga-loader-tls/localhost.crt -o /dev/null -w '%{http_code}' https://localhost:8443/v1/session || true)"
+            [ "$provider_status" = 200 ] && provider_ready=true
+            if [ "$status" = 405 ]; then ready=true; fi
+            if [ "$ready" = true ] && [ "$provider_ready" = true ]; then break; fi
+            sleep 1
+          done
+          [ "$ready" = true ] && [ "$provider_ready" = true ] || { cat build/provider.log build/gateway.log; exit 1; }
+          java -jar build/application-loader/loader.jar | grep -Fx 'rymga-loader integration ok'
+          RYMGA_INTEGRATION_ENDPOINT=https://localhost:8443 ctest --test-dir build/native --output-on-failure
+          app_output="$(printf 'dev-license\n' | build/native/rymga-loader run --endpoint https://localhost:8443 --product demo-plugin --channel stable --java "$(command -v java)" --trusted-key next-2026 0000000000000000000000000000000000000000000000000000000000000000 --trusted-key dev-2026 d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --jvm-arg -XshowSettings:vm --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- 2>&1)"
+          printf '%s\n' "$app_output" | grep -Fx 'rymga-loader integration ok'
+          printf '%s\n' "$app_output" | grep -F 'VM settings:'
+          denied="$(printf 'wrong-license\n' | build/native/rymga-loader run --endpoint https://localhost:8443 --product demo-plugin --channel stable --java "$(command -v java)" --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- 2>&1 || true)"
+          [ "$denied" = "Could not acquire artifact: authorization denied" ]
+          printf 'dev-license\n' | build/native/rymga-loader preload --endpoint https://localhost:8443 --product demo-plugin --channel stable --host "$(command -v java)" --plugin-dir /tmp/rymga-loader-plugins --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- -cp "$GITHUB_WORKSPACE/build/e2e-host" example.plugin.PluginHost /tmp/rymga-loader-plugins | grep -Fx 'plugin loaded normally'
+          [ -z "$(find /tmp/rymga-loader-plugins -mindepth 1 -print -quit)" ]
+          set +e
+          printf 'dev-license\n' | build/native/rymga-loader preload --endpoint https://localhost:8443 --product demo-plugin --channel stable --host /bin/sh --plugin-dir /tmp/rymga-loader-plugins --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- -c 'kill -TERM $$'
+          signal_status=$?
+          set -e
+          [ "$signal_status" -eq 143 ]
+          [ -z "$(find /tmp/rymga-loader-plugins -mindepth 1 -print -quit)" ]
+          oversized_license_output="$(head -c 4097 /dev/zero | tr '\0' x | build/native/rymga-loader run --endpoint https://localhost:8443 --product demo-plugin --channel stable --java "$(command -v java)" --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- 2>&1 || true)"
+          [ "$oversized_license_output" = "Could not read a license." ]
+          java -Xcheck:jni -Djava.library.path="$GITHUB_WORKSPACE/build/native" -cp client/java/build/classes/java/main:client/java/build/classes/java/test com.rymga.loader.NativeLoaderIntegration https://localhost:8443 /tmp/rymga-loader-tls/localhost.crt /tmp/rymga-loader-rúntime
+
+  native-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      - name: Install native dependencies
+        run: brew install openssl@3 autoconf autoconf-archive automake libtool
+      - name: Build and verify
+        run: RYMGA_BUILD_DIR="$GITHUB_WORKSPACE/build/native" ./scripts/build-and-verify.sh
+      - name: Run the HTTPS end-to-end flow
+        run: |
+          mkdir -p build/e2e-artifact build/e2e-host build/application-loader /tmp/rymga-loader-tls /tmp/rymga-loader-runtime /tmp/rymga-loader-rúntime /tmp/rymga-loader-plugins
+          chmod 700 /tmp/rymga-loader-runtime /tmp/rymga-loader-rúntime /tmp/rymga-loader-plugins
+          javac --release 21 -d build/e2e-host examples/plugin-host/src/main/java/example/plugin/Plugin.java examples/plugin-host/src/main/java/example/plugin/PluginHost.java
+          "$(brew --prefix openssl@3)/bin/openssl" base64 -d -in examples/fixtures/demo-plugin-rymga.jar.b64 -out build/e2e-artifact/demo-plugin.jar
+          "$(brew --prefix openssl@3)/bin/openssl" req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost -keyout /tmp/rymga-loader-tls/localhost.key -out /tmp/rymga-loader-tls/localhost.crt
+          if [ "$(uname -m)" = arm64 ]; then paper_platform=macos-aarch64; else paper_platform=macos-x86_64; fi
+          cp "client/java/build/libs/rymga-application-loader-${paper_platform}.jar" build/application-loader/loader.jar
+          set +e
+          java -jar build/application-loader/loader.jar
+          generated_config_status=$?
+          set -e
+          [ "$generated_config_status" -eq 2 ]
+          sed -i '' 's/key: ""/key: "dev-license"/' build/application-loader/config.yml
+          cp /tmp/rymga-loader-tls/localhost.crt build/application-loader/loader-ca.pem
+          keytool -importcert -noprompt -alias local-provider -file /tmp/rymga-loader-tls/localhost.crt -keystore /tmp/rymga-loader-tls/provider-truststore.p12 -storetype PKCS12 -storepass changeit
+          java --add-modules jdk.httpserver -cp gateway/build/classes/java/test com.rymga.loader.gateway.LicenseProviderFixture /tmp/rymga-loader-tls/localhost.crt /tmp/rymga-loader-tls/localhost.key > build/provider.log 2>&1 & provider_pid=$!
+          export LOADER_LICENSE_PROVIDER_MODE=http LOADER_LICENSE_PROVIDER_URL=https://localhost:9443/v1/verify LOADER_LICENSE_PROVIDER_CREDENTIAL=provider-test-credential LOADER_LICENSE_PROVIDER_TIMEOUT_MILLIS=3000
+          export LOADER_SIGNING_KEY_ID=dev-2026 LOADER_SIGNING_PRIVATE_KEY_PKCS8_BASE64=MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+          export LOADER_SIGNING_PUBLIC_KEY_X509_BASE64=MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=
+          export LOADER_ARTIFACT_ROOT="$GITHUB_WORKSPACE/build/e2e-artifact" LOADER_ARTIFACT_PRODUCT_ID=demo-plugin LOADER_ARTIFACT_CHANNEL=stable LOADER_ARTIFACT_ID=demo-release LOADER_ARTIFACT_FILENAME=demo-plugin.jar
+          export QUARKUS_HTTP_INSECURE_REQUESTS=disabled QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/tmp/rymga-loader-tls/localhost.crt QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/tmp/rymga-loader-tls/localhost.key
+          java -Djavax.net.ssl.trustStore=/tmp/rymga-loader-tls/provider-truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit -jar gateway/build/quarkus-app/quarkus-run.jar > build/gateway.log 2>&1 & gateway_pid=$!
+          trap 'kill "$gateway_pid" "$provider_pid" 2>/dev/null || true' EXIT
+          ready=false provider_ready=false
+          for attempt in {1..30}; do
+            provider_status="$(curl --silent --show-error --cacert /tmp/rymga-loader-tls/localhost.crt -o /dev/null -w '%{http_code}' https://localhost:9443/health || true)"
+            status="$(curl --silent --show-error --cacert /tmp/rymga-loader-tls/localhost.crt -o /dev/null -w '%{http_code}' https://localhost:8443/v1/session || true)"
+            [ "$provider_status" = 200 ] && provider_ready=true
+            if [ "$status" = 405 ]; then ready=true; fi
+            if [ "$ready" = true ] && [ "$provider_ready" = true ]; then break; fi
+            sleep 1
+          done
+          [ "$ready" = true ] && [ "$provider_ready" = true ] || { cat build/provider.log build/gateway.log; exit 1; }
+          java -jar build/application-loader/loader.jar | grep -Fx 'rymga-loader integration ok'
+          RYMGA_INTEGRATION_ENDPOINT=https://localhost:8443 ctest --test-dir build/native --output-on-failure
+          printf 'dev-license\n' | build/native/rymga-loader run --endpoint https://localhost:8443 --product demo-plugin --channel stable --java "$(command -v java)" --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- | grep -Fx 'rymga-loader integration ok'
+          printf 'dev-license\n' | build/native/rymga-loader preload --endpoint https://localhost:8443 --product demo-plugin --channel stable --host "$(command -v java)" --plugin-dir /tmp/rymga-loader-plugins --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir /tmp/rymga-loader-runtime --ca-bundle /tmp/rymga-loader-tls/localhost.crt --license-stdin -- -cp "$GITHUB_WORKSPACE/build/e2e-host" example.plugin.PluginHost /tmp/rymga-loader-plugins | grep -Fx 'plugin loaded normally'
+          [ -z "$(find /tmp/rymga-loader-plugins -mindepth 1 -print -quit)" ]
+          java -Xcheck:jni -Djava.library.path="$GITHUB_WORKSPACE/build/native" -cp client/java/build/classes/java/main:client/java/build/classes/java/test com.rymga.loader.NativeLoaderIntegration https://localhost:8443 /tmp/rymga-loader-tls/localhost.crt /tmp/rymga-loader-rúntime
+
+  native-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-openssl
+            autoconf
+            autoconf-archive
+            automake
+            libtool
+            make
+      - name: Build and run the HTTPS end-to-end flow
+        shell: msys2 {0}
+        run: |
+          RYMGA_BUILD_DIR="$PWD/build/native" ./scripts/build-and-verify.sh
+          mkdir -p build/e2e-artifact build/e2e-host build/tls build/application-loader
+          javac --release 21 -d build/e2e-host examples/plugin-host/src/main/java/example/plugin/Plugin.java examples/plugin-host/src/main/java/example/plugin/PluginHost.java
+          openssl base64 -d -in examples/fixtures/demo-plugin-rymga.jar.b64 -out build/e2e-artifact/demo-plugin.jar
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj //CN=localhost -addext subjectAltName=DNS:localhost -keyout build/tls/localhost.key -out build/tls/localhost.crt
+          cp client/java/build/libs/rymga-application-loader-windows-x86_64.jar build/application-loader/loader.jar
+          application_bundle="$(cygpath -w "$PWD/build/application-loader/loader.jar")"
+          set +e
+          java -jar "$application_bundle"
+          generated_config_status=$?
+          set -e
+          [ "$generated_config_status" -eq 2 ]
+          sed -i 's/key: ""/key: "dev-license"/' build/application-loader/config.yml
+          cp build/tls/localhost.crt build/application-loader/loader-ca.pem
+          artifact_root="$(cygpath -w "$PWD/build/e2e-artifact")"
+          certificate="$(cygpath -w "$PWD/build/tls/localhost.crt")"
+          certificate_key="$(cygpath -w "$PWD/build/tls/localhost.key")"
+          truststore="$(cygpath -w "$PWD/build/tls/provider-truststore.p12")"
+          runtime_directory="$(cygpath -w "$PWD/build/e2e rúntime")"
+          plugin_directory="$(cygpath -w "$PWD/build/e2e plugins ñ")"
+          java_executable="$(cygpath -w "$(command -v java)")"
+          host_classpath="$(cygpath -wp "$PWD/build/e2e-host")"
+          client_classpath="$(cygpath -wp "$PWD/client/java/build/classes/java/main:$PWD/client/java/build/classes/java/test")"
+          native_directory="$(cygpath -w "$PWD/build/native")"
+          keytool -importcert -noprompt -alias local-provider -file "$certificate" -keystore "$truststore" -storetype PKCS12 -storepass changeit
+          java --add-modules jdk.httpserver -cp "$(cygpath -wp "$PWD/gateway/build/classes/java/test")" com.rymga.loader.gateway.LicenseProviderFixture "$certificate" "$certificate_key" > build/provider.log 2>&1 & provider_pid=$!
+          export LOADER_LICENSE_PROVIDER_MODE=http LOADER_LICENSE_PROVIDER_URL=https://localhost:9443/v1/verify LOADER_LICENSE_PROVIDER_CREDENTIAL=provider-test-credential LOADER_LICENSE_PROVIDER_TIMEOUT_MILLIS=3000
+          export LOADER_SIGNING_KEY_ID=dev-2026 LOADER_SIGNING_PRIVATE_KEY_PKCS8_BASE64=MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+          export LOADER_SIGNING_PUBLIC_KEY_X509_BASE64=MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=
+          export LOADER_ARTIFACT_ROOT="$artifact_root" LOADER_ARTIFACT_PRODUCT_ID=demo-plugin LOADER_ARTIFACT_CHANNEL=stable LOADER_ARTIFACT_ID=demo-release LOADER_ARTIFACT_FILENAME=demo-plugin.jar
+          export QUARKUS_HTTP_INSECURE_REQUESTS=disabled QUARKUS_HTTP_SSL_CERTIFICATE_FILES="$certificate" QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES="$certificate_key"
+          java -Djavax.net.ssl.trustStore="$truststore" -Djavax.net.ssl.trustStorePassword=changeit -jar gateway/build/quarkus-app/quarkus-run.jar > build/gateway.log 2>&1 & gateway_pid=$!
+          trap 'kill "$gateway_pid" "$provider_pid" 2>/dev/null || true' EXIT
+          ready=false provider_ready=false
+          for attempt in {1..30}; do
+            provider_status="$(curl --silent --show-error --cacert build/tls/localhost.crt -o /dev/null -w '%{http_code}' https://localhost:9443/health || true)"
+            status="$(curl --silent --show-error --cacert build/tls/localhost.crt -o /dev/null -w '%{http_code}' https://localhost:8443/v1/session || true)"
+            [ "$provider_status" = 200 ] && provider_ready=true
+            if [ "$status" = 405 ]; then ready=true; fi
+            if [ "$ready" = true ] && [ "$provider_ready" = true ]; then break; fi
+            sleep 1
+          done
+          [ "$ready" = true ] && [ "$provider_ready" = true ] || { cat build/provider.log build/gateway.log; exit 1; }
+          java -jar "$application_bundle" | grep -Fx 'rymga-loader integration ok'
+          printf 'dev-license\n' | build/native/rymga-loader.exe run --endpoint https://localhost:8443 --product demo-plugin --channel stable --java "$java_executable" --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir "$runtime_directory" --ca-bundle "$certificate" --license-stdin -- | grep -Fx 'rymga-loader integration ok'
+          printf 'dev-license\n' | build/native/rymga-loader.exe preload --endpoint https://localhost:8443 --product demo-plugin --channel stable --host "$java_executable" --plugin-dir "$plugin_directory" --key-id dev-2026 --public-key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a --runtime-dir "$runtime_directory" --ca-bundle "$certificate" --license-stdin -- -cp "$host_classpath" example.plugin.PluginHost "$plugin_directory" | grep -Fx 'plugin loaded normally'
+          [ -z "$(find 'build/e2e plugins ñ' -mindepth 1 -print -quit)" ]
+          java -Xcheck:jni -Djava.library.path="$native_directory" -cp "$client_classpath" com.rymga.loader.NativeLoaderIntegration https://localhost:8443 "$certificate" "$runtime_directory"

@@ -1,0 +1,4 @@
+name: RymgaProtectedFixture
+version: 1.0.0
+main: com.rymga.loader.paper.ProtectedPaperFixture
+api-version: '1.21'

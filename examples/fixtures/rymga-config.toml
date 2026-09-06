@@ -1,0 +1,32 @@
+seed = 20260904
+
+[jar]
+input = "demo-plugin.jar"
+output = "demo-plugin-rymga.jar"
+
+[techniques]
+rename = false
+stripDebug = true
+synthetic = false
+stringEncryption = "POOL"
+callerBinding = "STACKWALKER"
+stripAnnotations = false
+
+[keep]
+packages = []
+classes = []
+
+[rename]
+deep = 1
+chars = ["a", "b", "c", "d", "e", "f", "g", "h"]
+packageStrategy = "MIRROR"
+overloadMethods = false
+
+[libraries]
+paths = ["host-api.jar"]
+
+[flow]
+enabled = false
+
+[classGuard]
+enabled = false

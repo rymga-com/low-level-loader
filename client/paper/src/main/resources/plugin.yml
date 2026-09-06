@@ -1,0 +1,5 @@
+name: RymgaPaperBootstrap
+version: 0.1.0
+main: com.rymga.loader.paper.RymgaPaperBootstrap
+api-version: '1.21'
+description: License-gated asynchronous bootstrap for one protected Paper plugin
