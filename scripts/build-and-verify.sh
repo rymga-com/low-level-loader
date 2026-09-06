@@ -113,7 +113,7 @@ case "$system_name" in
         unexpected="$(for binary in "$native_library" "$native_build/rymga-loader"; do readelf -d "$binary" | grep 'Shared library:' | grep -Ev 'Shared library: \[lib(c|m|dl|pthread|rt)\.so' || true; done)"
         ;;
     Darwin)
-        unexpected="$(for binary in "$native_library" "$native_build/rymga-loader"; do otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true; done)"
+        unexpected="$({ otool -L "$native_library" | tail -n +3; otool -L "$native_build/rymga-loader" | tail -n +2; } | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true)"
         ;;
     *)
         unexpected="$(for binary in "$native_library" "$native_build/rymga-loader.exe"; do objdump -p "$binary" | awk '/DLL Name:/{print tolower($3)}' | grep -Ev '^(advapi32|bcrypt|crypt32|iphlpapi|kernel32|msvcrt|secur32|ws2_32)\.dll$' || true; done)"
