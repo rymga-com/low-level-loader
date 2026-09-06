@@ -1,5 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #include "rymga_platform.h"
 
 #include <sodium.h>

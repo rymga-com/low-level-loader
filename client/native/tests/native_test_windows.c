@@ -9,6 +9,19 @@
 #include <string.h>
 #include <windows.h>
 
+static void overwrite(const char *path, const char *content) {
+    wchar_t value[RYMGA_PLATFORM_PATH_MAX];
+    assert(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, value, RYMGA_PLATFORM_PATH_MAX) > 0);
+    HANDLE file = CreateFileW(value, GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+            FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    assert(file != INVALID_HANDLE_VALUE);
+    LARGE_INTEGER start = {0}; DWORD written = 0; size_t length = strlen(content);
+    assert(length <= MAXDWORD && SetFilePointerEx(file, start, NULL, FILE_BEGIN) && SetEndOfFile(file));
+    assert(WriteFile(file, content, (DWORD)length, &written, NULL) && written == (DWORD)length);
+    assert(FlushFileBuffers(file));
+    assert(CloseHandle(file));
+}
+
 int main(void) {
     assert(strcmp(rymga_loader_result_string(RYMGA_LOADER_SIGNATURE_ERROR), "signature error") == 0);
     assert(rymga_loader_acquire(NULL, NULL, 0, NULL) == RYMGA_LOADER_INVALID_ARGUMENT);
@@ -30,8 +43,8 @@ int main(void) {
     assert(rymga_platform_make_temp_directory(candidate_utf8, stale, sizeof(stale)));
     const char *stale_name = strrchr(stale, '/'); stale_name = stale_name == NULL ? stale : stale_name + 1;
     assert(snprintf(marker, sizeof(marker), "%s/.rymga-owner", stale) < (int)sizeof(marker));
-    FILE *marker_file = fopen(marker, "wb"); assert(marker_file != NULL);
-    assert(fprintf(marker_file, "RLL1 4294967295 1 %s\n", stale_name) > 0); assert(fclose(marker_file) == 0);
+    char marker_content[160]; assert(snprintf(marker_content, sizeof(marker_content), "RLL1 4294967295 1 %s\n", stale_name) < (int)sizeof(marker_content));
+    overwrite(marker, marker_content);
     rymga_platform_cleanup_stale(candidate_utf8, 1);
     assert(GetFileAttributesA(stale) == INVALID_FILE_ATTRIBUTES);
     char plugin_directory[RYMGA_PLATFORM_PATH_MAX], source[RYMGA_PLATFORM_PATH_MAX], destination[RYMGA_PLATFORM_PATH_MAX];
@@ -48,7 +61,8 @@ int main(void) {
     FILE *owner = fopen(abandoned.marker, "rb"); assert(owner != NULL); char owner_content[800] = {0};
     assert(fread(owner_content, 1, sizeof(owner_content) - 1, owner) > 0); assert(fclose(owner) == 0);
     char *owner_rest = strchr(owner_content + 5, ' '); assert(owner_rest != NULL);
-    owner = fopen(abandoned.marker, "wb"); assert(owner != NULL); assert(fprintf(owner, "RLP1 4294967295%s", owner_rest) > 0); assert(fclose(owner) == 0);
+    char replacement_owner[800]; assert(snprintf(replacement_owner, sizeof(replacement_owner), "RLP1 4294967295%s", owner_rest) < (int)sizeof(replacement_owner));
+    overwrite(abandoned.marker, replacement_owner);
     rymga_platform_cleanup_plugins(plugin_directory); assert(GetFileAttributesA(destination) == INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileA(source)); wchar_t plugin_wide[RYMGA_PLATFORM_PATH_MAX];
     assert(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, plugin_directory, -1, plugin_wide, RYMGA_PLATFORM_PATH_MAX) > 0);
