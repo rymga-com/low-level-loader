@@ -10,8 +10,8 @@ done
 
 system_name="$(uname -s)"
 architecture="$(uname -m)"
-generator_arguments=()
-chainload_arguments=()
+generator="Unix Makefiles"
+chainload_argument=
 
 case "$system_name" in
     Linux)
@@ -44,7 +44,7 @@ case "$system_name" in
         esac
         native_filename=rymga_loader_jni.dll
         bootstrap=bat
-        generator_arguments=(-G Ninja)
+        generator=Ninja
         ;;
     *)
         printf 'Unsupported operating system: %s\n' "$system_name" >&2
@@ -72,16 +72,16 @@ if [ "$bootstrap" = bat ]; then
     cmd.exe /c "$(cygpath -w "$vcpkg_root/bootstrap-vcpkg.bat")" -disableMetrics
     toolchain="$(cygpath -m "$vcpkg_root/scripts/buildsystems/vcpkg.cmake")"
     chainload="$(cygpath -m "$vcpkg_root/scripts/toolchains/mingw.cmake")"
-    chainload_arguments=(-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$chainload")
+    chainload_argument="-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$chainload"
 else
     "$vcpkg_root/bootstrap-vcpkg.sh" -disableMetrics
     toolchain="$vcpkg_root/scripts/buildsystems/vcpkg.cmake"
 fi
 
-cmake -S client/native -B "$native_build" "${generator_arguments[@]}" \
+cmake -S client/native -B "$native_build" -G "$generator" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
-    "${chainload_arguments[@]}" \
+    ${chainload_argument:+"$chainload_argument"} \
     -DVCPKG_TARGET_TRIPLET="$triplet" \
     -DRYMGA_SELF_CONTAINED=ON \
     -DRYMGA_EMBEDDED_CONFIG=ON \

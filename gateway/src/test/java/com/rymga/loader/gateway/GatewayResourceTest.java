@@ -3,9 +3,10 @@ package com.rymga.loader.gateway;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
@@ -55,8 +56,10 @@ public class GatewayResourceTest {
                 .extract()
                 .asByteArray();
 
-        assertArrayEquals("This is a deterministic test artifact. It is intentionally not an executable JAR.\n"
-                .getBytes(StandardCharsets.UTF_8), artifact);
+        try (InputStream expected = GatewayResourceTest.class.getResourceAsStream("/artifacts/demo-plugin.jar")) {
+            assertNotNull(expected);
+            assertArrayEquals(expected.readAllBytes(), artifact);
+        }
     }
 
     @Test
