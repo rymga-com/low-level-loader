@@ -185,6 +185,7 @@ jobs:
       - name: Build and run the HTTPS end-to-end flow
         shell: msys2 {0}
         run: |
+          export PATH="$(cygpath -u "$JAVA_HOME")/bin:$PATH"
           RYMGA_BUILD_DIR="$PWD/build/native" ./scripts/build-and-verify.sh
           mkdir -p build/e2e-artifact build/e2e-host build/tls build/application-loader
           javac --release 21 -d build/e2e-host examples/plugin-host/src/main/java/example/plugin/Plugin.java examples/plugin-host/src/main/java/example/plugin/PluginHost.java
