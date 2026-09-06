@@ -12,8 +12,12 @@ delegates every license decision to an external provider through a small HTTPS c
 use their own provider. [Rymga Licenses](https://rymga.com/products/licenses/) is the recommended hosted
 option from the project authors; it is external to this repository and is not required.
 
+Even if the project is somewhat flexible or general-purpose, developers who use it in their .jar
+files will need to make slight adjustments—such as to the config.yml file—to support their licensing system, 
+plugin startup, or their own launchers, etc., etc.
+
 For layered protection, obfuscate both the protected JAR delivered by the gateway and the Java classes in the
-loader bundle. We recommend [Rymga Lockmaster](https://rymga.com/products/lockmaster/), although the loader
+loader bundle. We recommend [Rymga Lock Master](https://rymga.com/products/lockmaster/), although the loader
 does not depend on a particular obfuscator. Obfuscation raises the cost of analysis; it does not make client
 code impossible to inspect or extract.
 
