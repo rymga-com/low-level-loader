@@ -200,9 +200,9 @@ jobs:
           [ "$generated_config_status" -eq 2 ]
           sed -i 's/key: ""/key: "dev-license"/' build/application-loader/config.yml
           cp build/tls/localhost.crt build/application-loader/loader-ca.pem
-          artifact_root="$(cygpath -w "$PWD/build/e2e-artifact")"
-          certificate="$(cygpath -w "$PWD/build/tls/localhost.crt")"
-          certificate_key="$(cygpath -w "$PWD/build/tls/localhost.key")"
+          artifact_root="$(cygpath -m "$PWD/build/e2e-artifact")"
+          certificate="$(cygpath -m "$PWD/build/tls/localhost.crt")"
+          certificate_key="$(cygpath -m "$PWD/build/tls/localhost.key")"
           truststore="$(cygpath -w "$PWD/build/tls/provider-truststore.p12")"
           runtime_directory="$(cygpath -w "$PWD/build/e2e rúntime")"
           plugin_directory="$(cygpath -w "$PWD/build/e2e plugins ñ")"
