@@ -179,6 +179,7 @@ jobs:
             autoconf
             autoconf-archive
             automake
+            git
             libtool
             make
       - name: Build and run the HTTPS end-to-end flow
