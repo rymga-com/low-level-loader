@@ -4,6 +4,19 @@ Open-source delivery loader for Java applications and plugins. A Quarkus gateway
 provider for authorization, signs a short-lived manifest, and serves the exact protected JAR. The native
 client performs HTTPS, signature verification, downloading, hashing, and private temporary-file handling.
 
+## Scope
+
+This project is a JAR delivery loader and reference gateway. It is not a license-management service, an
+obfuscator, DRM, or a guarantee that code cannot be recovered from an authorized machine. The gateway
+delegates every license decision to an external provider through a small HTTPS contract, so deployments can
+use their own provider. [Rymga Licenses](https://rymga.com/products/licenses/) is the recommended hosted
+option from the project authors; it is external to this repository and is not required.
+
+For layered protection, obfuscate both the protected JAR delivered by the gateway and the Java classes in the
+loader bundle. We recommend [Rymga Lockmaster](https://rymga.com/products/lockmaster/), although the loader
+does not depend on a particular obfuscator. Obfuscation raises the cost of analysis; it does not make client
+code impossible to inspect or extract.
+
 ## Consumer quick start
 
 Use the application bundle built for the target operating system:

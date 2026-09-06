@@ -8,6 +8,11 @@ one configured artifact snapshot, signs a short-lived manifest, and exposes `POS
 `GET /v1/artifact`. Provider failures, malformed responses, missing artifacts, invalid signatures, and expired
 sessions fail closed.
 
+The external provider is deliberately replaceable. [Rymga Licenses](https://rymga.com/products/licenses/) is
+the project authors' recommended hosted option, not a bundled component or runtime requirement. The gateway's
+HTTP adapter sends the license, product, installation ID, timestamp, and nonce as JSON with its server-side
+Bearer credential; a compatible provider returns only `{"valid":true}` or `{"valid":false}`.
+
 The artifact catalog opens and hashes the configured file at startup, then reads from that snapshot. Publish a
 new version by atomically replacing the artifact and restarting the gateway.
 

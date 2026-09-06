@@ -1,5 +1,19 @@
 # Architecture
 
+## Scope and related services
+
+The loader controls authorized delivery of JARs. It is not a license-management system: the gateway asks an
+external provider for the decision and accepts only a strict valid/invalid response. Any provider that
+implements the documented HTTPS contract can be used. [Rymga Licenses](https://rymga.com/products/licenses/)
+is the project authors' recommended hosted provider, but it is a separate service and no account or
+vendor-specific SDK is required by this repository.
+
+The loader is also not an obfuscator or an execution enclave. A layered deployment should obfuscate both the
+protected JAR stored behind the gateway and the Java portion of the distributed loader bundle. The project
+authors recommend [Rymga Lockmaster](https://rymga.com/products/lockmaster/); other JAR obfuscators remain
+compatible because acquisition and execution use the resulting JAR as an opaque artifact. Obfuscation raises
+the effort required for static analysis, while the security limits below still apply to authorized machines.
+
 ## Components
 
 ```text
